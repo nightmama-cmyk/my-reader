@@ -103,6 +103,7 @@
         const App = () => {
             // --- 狀態定義 ---
             const [books, setBooks] = useState([]);
+            const mainRef = useRef(null); // 我們需要讓程式「抓得到」那個捲動區域。加入這一行
             const [currentBookId, setCurrentBookId] = useState(null);
             const [isMenuOpen, setIsMenuOpen] = useState(false);
             const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -120,35 +121,60 @@
             const [chatHistory, setChatHistory] = useState([]);
             const [userInput, setUserInput] = useState("");
             const [isAILoading, setIsAILoading] = useState(false);
+            const [isVertical, setIsVertical] = useState(false);
+            const [marginX, setMarginX] = useState(15); // 預設留白 15%
 
             // --- 初始化 ---
             useEffect(() => {
                 const savedBooks = localStorage.getItem('ai_reader_library_v7');
                 const savedSettings = localStorage.getItem('ai_reader_settings_v7');
                 if (savedBooks) {
-                    try { setBooks(JSON.parse(savedBooks)); } catch(e) {}
-                }
-                if (savedSettings) {
-                    try {
-                        const s = JSON.parse(savedSettings);
-                        if (s.theme) setTheme(s.theme);
-                        if (s.fontSize) setFontSize(s.fontSize);
-                        if (s.isSimplified !== undefined) setIsSimplified(s.isSimplified);
-                        if (s.currentBookId) setCurrentBookId(s.currentBookId);
-                    } catch(e) {}
+                try {
+                    const s = JSON.parse(savedSettings);
+                    if (s.theme) setTheme(s.theme);
+                    if (s.fontSize) setFontSize(s.fontSize);
+                    if (s.isSimplified !== undefined) setIsSimplified(s.isSimplified);
+                    if (s.currentBookId) setCurrentBookId(s.currentBookId);
+                    if (s.isVertical !== undefined) setIsVertical(s.isVertical);
+                    if (s.marginX !== undefined) setMarginX(s.marginX);
+                } catch(e) {}
                 }
                 window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
             }, []);
 
             useEffect(() => {
-                localStorage.setItem('ai_reader_settings_v7', JSON.stringify({ theme, fontSize, fontFamily, isSimplified, ocrLang, currentBookId }));
-            }, [theme, fontSize, fontFamily, isSimplified, ocrLang, currentBookId]);
+                localStorage.setItem('ai_reader_settings_v7', JSON.stringify({ theme, fontSize, fontFamily, isSimplified, ocrLang, currentBookId, isVertical, marginX }));
+            }, [theme, fontSize, fontFamily, isSimplified, ocrLang, currentBookId, isVertical, marginX]);
 
             useEffect(() => {
                 localStorage.setItem('ai_reader_library_v7', JSON.stringify(books));
             }, [books]);
 
             const currentBook = useMemo(() => books.find(b => b.id === currentBookId), [books, currentBookId]);
+
+            // 自動跳轉到上次觀看位置
+            useEffect(() => {
+                if (currentBook && mainRef.current) {
+                    const el = mainRef.current;
+        
+                    // 稍微延遲執行（100ms），確保文字內容已經完全渲染出來，計算高度才準確
+                    const timer = setTimeout(() => {
+                        if (isVertical) {
+                            // 直排模式：計算橫向捲動
+                            const maxScroll = el.scrollWidth - el.clientWidth;
+                            // 在 RTL (Right-to-Left) 模式下，scrollLeft 是負值
+                            el.scrollLeft = -(currentBook.progress / 100) * maxScroll;
+                        } else {
+                            // 橫排模式：計算直向捲動
+                            const maxScroll = el.scrollHeight - el.clientHeight;
+                            el.scrollTop = (currentBook.progress / 100) * maxScroll;
+                        }
+                    }, 150);
+        
+                    return () => clearTimeout(timer);
+                }
+            }, [currentBookId]); // 只有在切換書本時才觸發自動跳轉
+
 
             // --- 文字處理 ---
             const displayContent = useMemo(() => {
@@ -172,11 +198,24 @@
             // --- 功能函數 ---
             const handleScroll = (e) => {
                 if (!currentBookId) return;
-                const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
-                if (scrollHeight <= clientHeight) return;
-                const prog = (scrollTop / (scrollHeight - clientHeight)) * 100;
+                const { scrollTop, scrollHeight, clientHeight, scrollLeft, scrollWidth, clientWidth } = e.currentTarget;
+                let prog = 0;
+    
+                if (isVertical) {
+                   // 直排模式：計算橫向滾動 (因方向為 right-to-left，scrollLeft 可能為負數)
+                   const maxScroll = scrollWidth - clientWidth;
+                   if (maxScroll <= 0) return;
+                   prog = (Math.abs(scrollLeft) / maxScroll) * 100;
+                } else {
+                   // 橫排模式：計算直向滾動
+                   const maxScroll = scrollHeight - clientHeight;
+                   if (maxScroll <= 0) return;
+                   prog = (scrollTop / maxScroll) * 100;
+                }
                 setBooks(prev => prev.map(b => b.id === currentBookId ? { ...b, progress: prog } : b));
             };
+
+
 
             const handleAISummary = async () => {
                 if (!currentBook) return;
@@ -323,13 +362,24 @@
                     </header>
 
                     {/* 內容區 */}
-                    <main onScroll={handleScroll} className="flex-1 overflow-y-auto px-6 py-6 md:px-32 lg:px-64 no-scrollbar scroll-smooth"
-                        style={{ fontSize: `${fontSize}pt`, fontFamily: fontFamily === 'serif' ? '"Noto Serif TC", serif' : '"Noto Sans TC", sans-serif' }}>
+                    <main ref={mainRef} onScroll={handleScroll}
+                        className={`flex-1 no-scrollbar scroll-smooth ${isVertical ? 'overflow-x-auto overflow-y-hidden' : 'overflow-y-auto overflow-x-hidden'}`}
+                        style={{ 
+                            fontSize: `${fontSize}pt`, 
+                            fontFamily: fontFamily === 'serif' ? '"Noto Serif TC", serif' : '"Noto Sans TC", sans-serif',
+                            writingMode: isVertical ? 'vertical-rl' : 'horizontal-tb',
+                            // 橫排時控制左右留白；直排時控制上下留白(改變單行字數)
+                            paddingLeft: isVertical ? '1.5rem' : `${marginX}%`,
+                            paddingRight: isVertical ? '1.5rem' : `${marginX}%`,
+                            paddingTop: isVertical ? `${marginX}%` : '1.5rem',
+                            paddingBottom: isVertical ? `${marginX}%` : '1.5rem'
+                        }}>
                         {currentBook ? (
                             <div className="content-area whitespace-pre-wrap fade-in">
-                                <h2 className="text-2xl font-bold mb-8 opacity-80 border-b border-current border-opacity-10 pb-4">{displayTitle}</h2>
+                                <h2 className={`text-2xl font-bold opacity-80 border-current border-opacity-10 ${isVertical ? 'ml-8 border-l pl-4' : 'mb-8 border-b pb-4'}`}>{displayTitle}</h2>
                                 {displayContent}
-                                <div className="h-48" />
+                                {/* 底部或尾部留白 */}
+                                <div className={isVertical ? "w-48 inline-block" : "h-48"} />
                             </div>
                         ) : (
                             <div className="flex flex-col items-center justify-center h-full opacity-30 text-center px-10">
@@ -339,6 +389,9 @@
                             </div>
                         )}
                     </main>
+
+
+
 
                     {currentBook && (
                         <div className="h-1.5 w-full bg-gray-500 bg-opacity-10 fixed bottom-0 z-40">
@@ -447,6 +500,25 @@
                                         <div className={`absolute top-1 w-6 h-6 bg-white rounded-full shadow-md transition-all ${isSimplified ? 'right-1' : 'left-1'}`} />
                                     </button>
                                 </div>
+
+                     {/* 直排閱讀開關 */}
+                     <div className="flex justify-between items-center bg-gray-50 dark:bg-slate-700 p-4 rounded-2xl mt-4">
+                         <span className="font-bold flex items-center gap-2 text-sm"><Icon name="layout" size={20} className="text-blue-500" /> 直排模式</span>
+                         <button onClick={() => setIsVertical(!isVertical)} className={`w-14 h-8 rounded-full transition-all relative ${isVertical ? 'bg-blue-500' : 'bg-gray-300 dark:bg-slate-600'}`}>
+                             <div className={`absolute top-1 w-6 h-6 bg-white rounded-full shadow-md transition-all ${isVertical ? 'right-1' : 'left-1'}`} />
+                         </button>
+                     </div>
+
+                     {/* 邊距調整拉桿 */}
+                     <div className="space-y-4 mt-4">
+                         <div className="flex justify-between font-bold opacity-60 text-xs"><span>螢幕留白比例</span><span className="text-blue-500 text-lg">{marginX}%</span></div>
+                         <div className="flex items-center gap-4 bg-gray-50 dark:bg-slate-700 p-3 rounded-2xl">
+                             <button onClick={() => setMarginX(m => Math.max(0, m - 5))} className="w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-600 rounded-xl shadow-sm active:scale-90 transition-all"><Icon name="minus" size={16} /></button>
+                             <input type="range" min="0" max="40" step="5" value={marginX} onChange={e => setMarginX(parseInt(e.target.value))} className="flex-1" />
+                             <button onClick={() => setMarginX(m => Math.min(40, m + 5))} className="w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-600 rounded-xl shadow-sm active:scale-90 transition-all"><Icon name="plus" size={16} /></button>
+                         </div>
+                     </div>
+
                                 <div className="space-y-4">
                                     <div className="flex justify-between font-bold opacity-60 text-xs"><span>字體大小</span><span className="text-blue-500 text-lg">{fontSize} pt</span></div>
                                     <div className="flex items-center gap-4 bg-gray-50 dark:bg-slate-700 p-3 rounded-2xl">
